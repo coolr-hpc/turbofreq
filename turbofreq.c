@@ -70,7 +70,7 @@ static u16 global_pstate = 0;
 #define	POLICY_CPU	0
 #define	POLICY_SMP	1
 #define	POLICY_BOOST	2
-#define	POLICY_NOTURBO	3
+#define	POLICY_NOBOOST	3
 static int policy = POLICY_CPU;
 
 static inline void intel_pstate_calc_busy(struct cpudata *cpu)
@@ -221,7 +221,7 @@ static void set_policy(struct cpudata *cpu, int policy)
 	case POLICY_BOOST:
 		core_set_pstate(cpu, cpu->pstate.turbo_pstate);
 		break;
-	case POLICY_NOTURBO:
+	case POLICY_NOBOOST:
 		core_set_pstate(cpu, cpu->pstate.max_pstate);
 		break;
 	}
@@ -356,7 +356,7 @@ static struct cpufreq_driver turbofreq_driver = {
 static ssize_t pstate_available_policies_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-	return scnprintf(buf, PAGE_SIZE, "cpu smp boost noturbo\n");
+	return scnprintf(buf, PAGE_SIZE, "cpu smp boost noboost\n");
 }
 
 static ssize_t pstate_policy_show(struct device *dev,
@@ -367,8 +367,8 @@ static ssize_t pstate_policy_show(struct device *dev,
 			return scnprintf(buf, PAGE_SIZE, "smp\n");
 		case POLICY_BOOST:
 			return scnprintf(buf, PAGE_SIZE, "boost\n");
-		case POLICY_NOTURBO:
-			return scnprintf(buf, PAGE_SIZE, "noturbo\n");
+		case POLICY_NOBOOST:
+			return scnprintf(buf, PAGE_SIZE, "noboost\n");
 		case POLICY_CPU:
 		default:
 			return scnprintf(buf, PAGE_SIZE, "cpu\n");
@@ -388,8 +388,8 @@ static ssize_t pstate_policy_store(struct device *dev, struct device_attribute *
 		policy = POLICY_SMP;
 	} else if (!strncmp(buf, "boost\n", count)) {
 		policy = POLICY_BOOST;
-	} else if (!strncmp(buf, "noturbo\n", count)) {
-		policy = POLICY_NOTURBO;
+	} else if (!strncmp(buf, "noboost\n", count)) {
+		policy = POLICY_NOBOOST;
 	} else {
 		return -EINVAL;
 	}
