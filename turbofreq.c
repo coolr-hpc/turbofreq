@@ -470,7 +470,7 @@ static ssize_t global_pstate_store(struct device *dev, struct device_attribute *
 	/* XXX check for valid frequency */
 	if (global_pstate == 0 || val < global_pstate) {
 		global_pstate = val;
-		set_global_pstate(val);
+		set_global_pstate();
 	}
 	return count;
 }
