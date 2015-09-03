@@ -17,9 +17,9 @@
 #include <asm/cpufeature.h> /* cpu_has */
 #include <asm/processor.h> /* boot_cpu_data */
 
-#define	SAMPLE_RATE_MS	1000
+#define	SAMPLE_RATE_MS	(1000)
 
-#define FRAC_BITS 8
+#define FRAC_BITS (8)
 #define int_tofp(X) ((int64_t)(X) << FRAC_BITS)
 #define fp_toint(X) ((X) >> FRAC_BITS)
 
@@ -381,6 +381,7 @@ static ssize_t pstate_policy_store(struct device *dev, struct device_attribute *
 {
 	struct cpudata *cpu;
 	unsigned long int cpunum;
+	int oldpolicy = policy;
 
 	if (!strncmp(buf, "cpu\n", count)) {
 		policy = POLICY_CPU;
@@ -394,10 +395,20 @@ static ssize_t pstate_policy_store(struct device *dev, struct device_attribute *
 		return -EINVAL;
 	}
 
-	/* XXX set per-cpu pstate now or just wait for next timer_func call? */
-	cpunum = dev->id;
-	cpu = all_cpu_data[cpunum];
-	set_policy(cpu, policy);
+	/* do nothing if the request policy is same as the old policy */
+	if (oldpolicy == policy) 
+		return count;
+
+	get_online_cpus();
+	for_each_online_cpu(cpunum) {
+		cpu = all_cpu_data[cpunum];
+		del_timer(&cpu->timer);
+		set_policy(cpu, policy);
+		if (policy != POLICY_NOBOOST) {
+			add_timer_on(&cpu->timer, cpunum);
+		}
+	}
+	put_online_cpus();
 
 	return count;
 }
