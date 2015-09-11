@@ -8,13 +8,13 @@
 #include <linux/device.h>
 #include <linux/sched.h> /* task_struct current */
 #include <linux/vmalloc.h>
+#include <linux/cpufeature.h> /* cpu_has */
 
 #include <acpi/processor.h> /* ACPI_PROCESSOR_DEVICE_HID */
 
 #include <asm/msr.h>
 #include <asm/mwait.h>
 #include <asm/msr-index.h>
-#include <asm/cpufeature.h> /* cpu_has */
 #include <asm/processor.h> /* boot_cpu_data */
 
 #define	SAMPLE_RATE_MS	(1000)
@@ -63,9 +63,9 @@ struct cpudata {
 static struct cpudata **all_cpu_data;
 
 /* for smp-wide pstate */
-static u16 stable_pstate = 0;
+static u16 stable_pstate;
 static spinlock_t pstate_lock;
-static u16 global_pstate = 0;
+static u16 global_pstate;
 
 #define	POLICY_CPU	0
 #define	POLICY_SMP	1
@@ -76,6 +76,7 @@ static int policy = POLICY_CPU;
 static inline void intel_pstate_calc_busy(struct cpudata *cpu)
 {
 	u64 val;
+
 	val = 100 * cpu->sample.aperf;
 	do_div(val, cpu->sample.mperf);
 	cpu->sample.core_pct_busy = val;
@@ -84,6 +85,7 @@ static inline void intel_pstate_calc_busy(struct cpudata *cpu)
 static int core_get_pstate(void)
 {
 	u64 perf_status;
+
 	rdmsrl(MSR_IA32_PERF_STATUS, perf_status);
 	return (perf_status & 0xffff) >> 8;
 }
@@ -125,6 +127,7 @@ static inline int core_get_scaling(void)
 static void core_set_pstate(struct cpudata *cpudata, int pstate)
 {
 	u64 val;
+
 	val = pstate << 8;
 	wrmsrl_on_cpu(cpudata->cpu, MSR_IA32_PERF_CTL, val);
 }
@@ -190,8 +193,6 @@ static void reset_pstates(void)
 		c->boost = 0;
 	}
 	put_online_cpus();
-
-	return;
 }
 
 static void set_global_pstate(void)
@@ -205,8 +206,6 @@ static void set_global_pstate(void)
 		core_set_pstate(c, global_pstate);
 	}
 	put_online_cpus();
-
-	return;
 }
 
 static void set_policy(struct cpudata *cpu, int policy)
@@ -231,14 +230,12 @@ static void adjust_turbo_pstate(struct cpudata *cpu)
 {
 	/* set minimum frequency within turbo boost range */
 	if ((cpu->sample.pstate < cpu->stable_pstate) &&
-	    (cpu->sample.pstate > cpu->pstate.max_pstate)) {
+	    (cpu->sample.pstate > cpu->pstate.max_pstate))
 		cpu->stable_pstate = cpu->sample.pstate;
-	}
 
 	/* same thing for smp-wide pstate */
-	if (cpu->sample.pstate > cpu->pstate.max_pstate) {
+	if (cpu->sample.pstate > cpu->pstate.max_pstate)
 		update_if_less(cpu->sample.pstate);
-	}
 
 	/* now update core frequencies */
 
@@ -268,16 +265,22 @@ static void timer_func(unsigned long data)
 
 	sample = &cpu->sample;
 
-	/*if (cpu->cpu == 0)
-		printk(KERN_ALERT "busy = %d max = %d turbo = %d current = %d min = %d\n",
-		sample->core_pct_busy, cpu->pstate.max_pstate, cpu->pstate.turbo_pstate,
-		sample->pstate, cpu->min_pstate);*/
+#if 0
+	if (cpu->cpu == 0)
+		printk(KERN_ALERT
+		       "busy = %d max = %d turbo = %d current = %d min = %d\n",
+		       sample->core_pct_busy,
+		       cpu->pstate.max_pstate, cpu->pstate.turbo_pstate,
+		       sample->pstate, cpu->min_pstate);
+#endif
 
 	if (sample->core_pct_busy > 100) {
 		adjust_turbo_pstate(cpu);
 	} else {
-		/* XXX default to performance, but ideally this case would mimick intel_pstate */
-		core_set_pstate(cpu, cpu->pstate.turbo_pstate); 
+		/* XXX default to performance, but ideally this case
+		 * would mimick intel_pstate
+		 */
+		core_set_pstate(cpu, cpu->pstate.turbo_pstate);
 	}
 
 	delay = msecs_to_jiffies(SAMPLE_RATE_MS);
@@ -304,7 +307,7 @@ static int intel_pstate_init_cpu(unsigned int cpunum)
 	cpu->timer.data = (unsigned long)cpu;
 	cpu->timer.expires = jiffies + HZ/100;
 	cpu->timer.function = timer_func;
-	
+
 	intel_pstate_sample(cpu);
 
 	add_timer_on(&cpu->timer, cpunum);
@@ -317,7 +320,7 @@ static int intel_pstate_init_cpu(unsigned int cpunum)
 
 static int turbofreq_driver_verify(struct cpufreq_policy *policy)
 {
-	//cpufreq_verify_within_cpu_limits(policy);
+	/* cpufreq_verify_within_cpu_limits(policy); */
 	return 0;
 }
 
@@ -333,8 +336,10 @@ static int turbofreq_driver_init(struct cpufreq_policy *policy)
 	cpu = all_cpu_data[policy->cpu];
 	policy->min = cpu->pstate.min_pstate * cpu->pstate.scaling;
 	policy->max = cpu->pstate.turbo_pstate * cpu->pstate.scaling;
-	policy->cpuinfo.min_freq = cpu->pstate.min_pstate * cpu->pstate.scaling;
-	policy->cpuinfo.max_freq = cpu->pstate.turbo_pstate * cpu->pstate.scaling;
+	policy->cpuinfo.min_freq =
+		cpu->pstate.min_pstate * cpu->pstate.scaling;
+	policy->cpuinfo.max_freq =
+		cpu->pstate.turbo_pstate * cpu->pstate.scaling;
 	policy->cpuinfo.transition_latency = CPUFREQ_ETERNAL;
 
 	return 0;
@@ -363,40 +368,40 @@ static ssize_t pstate_policy_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	switch (policy) {
-		case POLICY_SMP:
-			return scnprintf(buf, PAGE_SIZE, "smp\n");
-		case POLICY_BOOST:
-			return scnprintf(buf, PAGE_SIZE, "boost\n");
-		case POLICY_NOBOOST:
-			return scnprintf(buf, PAGE_SIZE, "noboost\n");
-		case POLICY_CPU:
-		default:
-			return scnprintf(buf, PAGE_SIZE, "cpu\n");
+	case POLICY_SMP:
+		return scnprintf(buf, PAGE_SIZE, "smp\n");
+	case POLICY_BOOST:
+		return scnprintf(buf, PAGE_SIZE, "boost\n");
+	case POLICY_NOBOOST:
+		return scnprintf(buf, PAGE_SIZE, "noboost\n");
+	case POLICY_CPU:
+	default:
+		return scnprintf(buf, PAGE_SIZE, "cpu\n");
 	}
 
 }
 
-static ssize_t pstate_policy_store(struct device *dev, struct device_attribute *attr,
+static ssize_t pstate_policy_store(struct device *dev,
+				   struct device_attribute *attr,
 				   const char *buf, size_t count)
 {
 	struct cpudata *cpu;
 	unsigned long int cpunum;
 	int oldpolicy = policy;
 
-	if (!strncmp(buf, "cpu\n", count)) {
+	if (!strncmp(buf, "cpu\n", count))
 		policy = POLICY_CPU;
-	} else if (!strncmp(buf, "smp\n", count)) {
+	else if (!strncmp(buf, "smp\n", count))
 		policy = POLICY_SMP;
-	} else if (!strncmp(buf, "boost\n", count)) {
+	else if (!strncmp(buf, "boost\n", count))
 		policy = POLICY_BOOST;
-	} else if (!strncmp(buf, "noboost\n", count)) {
+	else if (!strncmp(buf, "noboost\n", count))
 		policy = POLICY_NOBOOST;
-	} else {
+	else
 		return -EINVAL;
-	}
 
 	/* do nothing if the request policy is same as the old policy */
-	if (oldpolicy == policy) 
+	if (oldpolicy == policy)
 		return count;
 
 	get_online_cpus();
@@ -404,9 +409,8 @@ static ssize_t pstate_policy_store(struct device *dev, struct device_attribute *
 		cpu = all_cpu_data[cpunum];
 		del_timer(&cpu->timer);
 		set_policy(cpu, policy);
-		if (policy != POLICY_NOBOOST) {
+		if (policy != POLICY_NOBOOST)
 			add_timer_on(&cpu->timer, cpunum);
-		}
 	}
 	put_online_cpus();
 
@@ -414,18 +418,20 @@ static ssize_t pstate_policy_store(struct device *dev, struct device_attribute *
 }
 
 static ssize_t task_boost_show(struct device *dev,
-                struct device_attribute *attr, char *buf)
+			       struct device_attribute *attr, char *buf)
 {
 	struct cpudata *cpu;
 	int cpunum;
 
-	cpunum = task_cpu(current); /* XXX assumes task is pinned, no cpu migration */
+	/* XXX assumes task is pinned, no cpu migration */
+	cpunum = task_cpu(current);
 	cpu = all_cpu_data[cpunum];
 	return scnprintf(buf, PAGE_SIZE, "%d\n", cpu->boost);
 }
 
-static ssize_t task_boost_store(struct device *dev, struct device_attribute *attr,
-                                   const char *buf, size_t count)
+static ssize_t task_boost_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
 {
 	unsigned int boost;
 	int ret;
@@ -439,7 +445,8 @@ static ssize_t task_boost_store(struct device *dev, struct device_attribute *att
 	if (boost > 1) /* boost is binary for now */
 		return -EINVAL;
 
-	cpunum = task_cpu(current); /* XXX assumes task is pinned, no cpu migration */
+	/* XXX assumes task is pinned, no cpu migration */
+	cpunum = task_cpu(current);
 	cpu = all_cpu_data[cpunum];
 	cpu->boost = boost;
 
@@ -447,26 +454,27 @@ static ssize_t task_boost_store(struct device *dev, struct device_attribute *att
 }
 
 static ssize_t reset_show(struct device *dev,
-                struct device_attribute *attr, char *buf)
+			  struct device_attribute *attr, char *buf)
 {
-	return scnprintf(buf, PAGE_SIZE, "\n");	
+	return scnprintf(buf, PAGE_SIZE, "\n");
 }
 
 static ssize_t reset_store(struct device *dev, struct device_attribute *attr,
-                                   const char *buf, size_t count)
+			   const char *buf, size_t count)
 {
 	reset_pstates();
 	return count;
 }
 
 static ssize_t global_pstate_show(struct device *dev,
-                struct device_attribute *attr, char *buf)
+				  struct device_attribute *attr, char *buf)
 {
 	return scnprintf(buf, PAGE_SIZE, "%d\n", global_pstate);
 }
 
-static ssize_t global_pstate_store(struct device *dev, struct device_attribute *attr,
-                                   const char *buf, size_t count)
+static ssize_t global_pstate_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
 {
 	unsigned int val;
 	int ret;
@@ -514,7 +522,7 @@ static int turbofreq_add_interface(struct device *dev)
 
 /* per-cpu interface */
 static ssize_t boost_store(struct device *dev, struct device_attribute *attr,
-                                   const char *buf, size_t count)
+			   const char *buf, size_t count)
 {
 	unsigned int boost;
 	int ret;
@@ -536,7 +544,7 @@ static ssize_t boost_store(struct device *dev, struct device_attribute *attr,
 }
 
 static ssize_t boost_show(struct device *dev,
-                struct device_attribute *attr, char *buf)
+			  struct device_attribute *attr, char *buf)
 {
 	struct cpudata *cpu;
 	int cpunum;
@@ -551,6 +559,7 @@ static DEVICE_ATTR_RW(boost);
 static int turbofreq_cpu_add_interface(unsigned long cpu)
 {
 	struct device *dev = get_cpu_device(cpu);
+
 	return sysfs_create_file(&dev->kobj, &dev_attr_boost.attr);
 }
 /* sysfs end */
@@ -565,9 +574,11 @@ static int __init turbofreq_init(void)
 	int rc;
 	unsigned long cpu;
 
-	//XXX missing driver cpu matching
-	//XXX missing cpu hotplug mess
-	all_cpu_data = vzalloc(sizeof(void*) * num_possible_cpus());
+	/*
+	 * XXX missing driver cpu matching
+	 * XXX missing cpu hotplug mess
+	 */
+	all_cpu_data = vzalloc(sizeof(void *) * num_possible_cpus());
 	if (!all_cpu_data)
 		return -ENOMEM;
 
@@ -584,11 +595,11 @@ static int __init turbofreq_init(void)
 	put_online_cpus();
 
 	rc = cpufreq_register_driver(&turbofreq_driver);
-	if (rc) 
+	if (rc)
 		goto out;
 
 	return rc;
-out: 
+out:
 	__turbofreq_exit();
 	return rc;
 }
