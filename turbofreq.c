@@ -38,7 +38,7 @@ struct sample {
 };
 
 struct pstate_data {
-	int	current_pstate;
+	/* int	current_pstate; */
 	int	min_pstate;
 	int	max_pstate;
 	int	scaling;
@@ -58,6 +58,7 @@ struct cpudata {
 	struct sample sample;
 	u16	stable_pstate; /* for per-cpu stable pstates */
 	int	boost;
+	int     pstate_user; /* pstate required by user */
 };
 
 static struct cpudata **all_cpu_data;
@@ -67,10 +68,10 @@ static u16 stable_pstate;
 static spinlock_t pstate_lock;
 static u16 global_pstate;
 
-#define	POLICY_CPU	0
-#define	POLICY_SMP	1
-#define	POLICY_BOOST	2
-#define	POLICY_NOBOOST	3
+#define	POLICY_CPU	(0)
+#define	POLICY_SMP	(1)
+#define	POLICY_BOOST	(2)
+#define	POLICY_NOBOOST	(3)
 static int policy = POLICY_CPU;
 
 static inline void intel_pstate_calc_busy(struct cpudata *cpu)
@@ -131,6 +132,15 @@ static void core_set_pstate(struct cpudata *cpudata, int pstate)
 	val = pstate << 8;
 	wrmsrl_on_cpu(cpudata->cpu, MSR_IA32_PERF_CTL, val);
 }
+
+static void core_set_pstate_local(int pstate)
+{
+	u64 val;
+
+	val = pstate << 8;
+	wrmsrl(MSR_IA32_PERF_CTL, val);
+}
+
 
 static inline void intel_pstate_sample(struct cpudata *cpu)
 {
@@ -491,8 +501,8 @@ static ssize_t global_pstate_store(struct device *dev,
 }
 
 
-static DEVICE_ATTR_RW(pstate_policy);
 static DEVICE_ATTR_RW(task_boost);
+static DEVICE_ATTR_RW(pstate_policy);
 static DEVICE_ATTR_RW(reset);
 static DEVICE_ATTR_RW(global_pstate);
 static DEVICE_ATTR_RO(pstate_available_policies);
@@ -552,11 +562,106 @@ static ssize_t boost_show(struct device *dev,
 
 static DEVICE_ATTR_RW(boost);
 
+static ssize_t pstate_user_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
+
+{
+	struct cpudata *cpu;
+	int cpunum;
+	unsigned int val;
+
+	/* effective only when NOBOOST is set */
+	if (policy != POLICY_NOBOOST)
+		return -EINVAL;
+
+	if (kstrtouint(buf, 10, &val))
+		return -EINVAL;
+
+	cpunum = dev->id; /* XXX assumes task is pinned, no cpu migration */
+	cpu = all_cpu_data[cpunum];
+
+	core_set_pstate_local(val);
+	cpu->pstate_user = val;
+
+	return count;
+}
+
+static ssize_t pstate_user_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct cpudata *cpu;
+	int cpunum;
+
+	cpunum = dev->id; /* XXX assumes task is pinned, no cpu migration */
+	cpu = all_cpu_data[cpunum];
+	return scnprintf(buf, PAGE_SIZE, "%d\n", cpu->pstate_user);
+}
+
+static DEVICE_ATTR_RW(pstate_user);
+
+
+
+static ssize_t pstate_info_show(struct device *dev,
+			  struct device_attribute *attr, char *buf)
+{
+	int nwritten = 0;
+	struct cpudata *cpu;
+	int cpunum;
+
+	cpunum = dev->id;
+	cpu = all_cpu_data[cpunum];
+
+	nwritten = scnprintf(buf + nwritten, PAGE_SIZE - nwritten, "%d %d %d\n",
+			     cpu->pstate.min_pstate, cpu->pstate.max_pstate,
+			     cpu->pstate.turbo_pstate);
+
+	return nwritten;
+}
+
+static DEVICE_ATTR_RO(pstate_info);
+
+
+static ssize_t amperf_bin_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	unsigned long flags;
+	union {
+		struct {
+			u64 aperf;
+			u64 mperf;
+		} s;
+		char buf[8*2];
+	} u;
+
+	local_irq_save(flags);
+	rdmsrl(MSR_IA32_APERF, u.s.aperf);
+	rdmsrl(MSR_IA32_MPERF, u.s.mperf);
+	local_irq_restore(flags);
+
+	memcpy(buf, u.buf, sizeof(u.buf));
+
+	return sizeof(u.buf);
+}
+
+static DEVICE_ATTR_RO(amperf_bin);
+
 static int turbofreq_cpu_add_interface(unsigned long cpu)
 {
 	struct device *dev = get_cpu_device(cpu);
+	int rc;
 
-	return sysfs_create_file(&dev->kobj, &dev_attr_boost.attr);
+	rc = sysfs_create_file(&dev->kobj, &dev_attr_amperf_bin.attr);
+	if (rc)
+		return rc;
+	rc = sysfs_create_file(&dev->kobj, &dev_attr_boost.attr);
+	if (rc)
+		return rc;
+	rc = sysfs_create_file(&dev->kobj, &dev_attr_pstate_user.attr);
+	if (rc)
+		return rc;
+	rc = sysfs_create_file(&dev->kobj, &dev_attr_pstate_info.attr);
+	return rc;
 }
 /* sysfs end */
 
