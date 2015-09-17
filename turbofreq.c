@@ -434,12 +434,10 @@ static ssize_t task_boost_store(struct device *dev,
 				const char *buf, size_t count)
 {
 	unsigned int boost;
-	int ret;
 	unsigned long cpunum;
 	struct cpudata *cpu;
-
-	ret = sscanf(buf, "%u", &boost);
-	if (ret != 1)
+	
+	if (kstrtouint(buf, 10, &boost))
 		return -EINVAL;
 
 	if (boost > 1) /* boost is binary for now */
@@ -477,10 +475,8 @@ static ssize_t global_pstate_store(struct device *dev,
 				   const char *buf, size_t count)
 {
 	unsigned int val;
-	int ret;
 
-	ret = sscanf(buf, "%u", &val);
-	if (ret != 1)
+	if (kstrtouint(buf, 10, &val))
 		return -EINVAL;
 
 	if (val > 255) /* frequency field is 8-bits anway */
@@ -520,17 +516,17 @@ static int turbofreq_add_interface(struct device *dev)
 	return sysfs_create_group(&dev->kobj, &turbofreq_attr_group);
 }
 
-/* per-cpu interface */
+/*
+ * per-cpu interface
+ */
 static ssize_t boost_store(struct device *dev, struct device_attribute *attr,
 			   const char *buf, size_t count)
 {
 	unsigned int boost;
-	int ret;
 	struct cpudata *cpu;
 	int cpunum;
 
-	ret = sscanf(buf, "%u", &boost);
-	if (ret != 1)
+	if (kstrtouint(buf, 10, &boost))
 		return -EINVAL;
 
 	if (boost > 1) /* boost is binary for now */
