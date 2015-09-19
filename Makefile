@@ -1,7 +1,9 @@
 
 ifneq ($(KERNELRELEASE),)
 
-obj-m  := turbofreq.o 
+coolrfreq-y = turbofreq.o pstate_user.o
+
+obj-m  := coolrfreq.o
 
 else
 
@@ -14,7 +16,10 @@ all::
 
 clean::
 	rm -f *.o  *.ko *.mod.c  modules.order  Module.symvers
-	rm -f .built-in.o.cmd   .turbofreq.*
+	rm -f .built-in.o.cmd 
+	rm -f .coolrfreq.*
+	rm -f .pstate_user.o.cmd .turbofreq.o.cmd
 	rm -rf .tmp_versions
+
 
 endif

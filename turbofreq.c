@@ -17,6 +17,8 @@
 #include <asm/msr-index.h>
 #include <asm/processor.h> /* boot_cpu_data */
 
+#include "coolrfreq.h"
+
 #define	SAMPLE_RATE_MS	(1000)
 
 #define FRAC_BITS (8)
@@ -83,7 +85,7 @@ static inline void intel_pstate_calc_busy(struct cpudata *cpu)
 	cpu->sample.core_pct_busy = val;
 }
 
-static int core_get_pstate(void)
+int core_get_pstate_local(void)
 {
 	u64 perf_status;
 
@@ -91,7 +93,7 @@ static int core_get_pstate(void)
 	return (perf_status & 0xffff) >> 8;
 }
 
-static int core_get_min_pstate(void)
+int core_get_min_pstate_local(void)
 {
 	u64 value;
 
@@ -99,7 +101,7 @@ static int core_get_min_pstate(void)
 	return (value >> 40) & 0xFF;
 }
 
-static int core_get_max_pstate(void)
+int core_get_max_pstate_local(void)
 {
 	u64 value;
 
@@ -107,20 +109,20 @@ static int core_get_max_pstate(void)
 	return (value >> 8) & 0xFF;
 }
 
-static int core_get_turbo_pstate(void)
+int core_get_turbo_pstate_local(void)
 {
 	u64 value;
 	int nont, ret;
 
 	rdmsrl(MSR_NHM_TURBO_RATIO_LIMIT, value);
-	nont = core_get_max_pstate();
+	nont = core_get_max_pstate_local();
 	ret = (value) & 255;
 	if (ret <= nont)
 		ret = nont;
 	return ret;
 }
 
-static inline int core_get_scaling(void)
+static inline int core_get_scaling_local(void)
 {
 	return 100000;
 }
@@ -133,7 +135,7 @@ static void core_set_pstate(struct cpudata *cpudata, int pstate)
 	wrmsrl_on_cpu(cpudata->cpu, MSR_IA32_PERF_CTL, val);
 }
 
-static void core_set_pstate_local(int pstate)
+void core_set_pstate_local(int pstate)
 {
 	u64 val;
 
@@ -151,7 +153,7 @@ static inline void intel_pstate_sample(struct cpudata *cpu)
 	rdmsrl(MSR_IA32_APERF, aperf);
 	rdmsrl(MSR_IA32_MPERF, mperf);
 	local_irq_restore(flags);
-	cpu->sample.pstate = core_get_pstate();
+	cpu->sample.pstate = core_get_pstate_local();
 
 	cpu->last_sample_time = cpu->sample.time;
 	cpu->sample.time = ktime_get();
@@ -176,14 +178,16 @@ static void update_if_less(u16 pstate)
 
 static void intel_pstate_get_cpu_pstates(struct cpudata *cpu)
 {
-	cpu->pstate.min_pstate = core_get_min_pstate();
-	cpu->pstate.max_pstate = core_get_max_pstate();
-	cpu->pstate.turbo_pstate = core_get_turbo_pstate();
-	cpu->pstate.scaling = core_get_scaling();
+	cpu->pstate.min_pstate = core_get_min_pstate_local();
+	cpu->pstate.max_pstate = core_get_max_pstate_local();
+	cpu->pstate.turbo_pstate = core_get_turbo_pstate_local();
+	cpu->pstate.scaling = core_get_scaling_local();
 
 	core_set_pstate(cpu, cpu->pstate.turbo_pstate);
 	cpu->stable_pstate = cpu->pstate.turbo_pstate;
 	update_if_less(cpu->stable_pstate);
+
+	cpu->pstate_user = core_get_max_pstate_local();
 }
 
 static void reset_pstates(void)
@@ -562,46 +566,7 @@ static ssize_t boost_show(struct device *dev,
 
 static DEVICE_ATTR_RW(boost);
 
-static ssize_t pstate_user_store(struct device *dev,
-				 struct device_attribute *attr,
-				 const char *buf, size_t count)
-
-{
-	struct cpudata *cpu;
-	int cpunum;
-	unsigned int val;
-
-	/* effective only when NOBOOST is set */
-	if (policy != POLICY_NOBOOST)
-		return -EINVAL;
-
-	if (kstrtouint(buf, 10, &val))
-		return -EINVAL;
-
-	cpunum = dev->id; /* XXX assumes task is pinned, no cpu migration */
-	cpu = all_cpu_data[cpunum];
-
-	core_set_pstate_local(val);
-	cpu->pstate_user = val;
-
-	return count;
-}
-
-static ssize_t pstate_user_show(struct device *dev,
-				struct device_attribute *attr, char *buf)
-{
-	struct cpudata *cpu;
-	int cpunum;
-
-	cpunum = dev->id; /* XXX assumes task is pinned, no cpu migration */
-	cpu = all_cpu_data[cpunum];
-	return scnprintf(buf, PAGE_SIZE, "%d\n", cpu->pstate_user);
-}
-
-static DEVICE_ATTR_RW(pstate_user);
-
-
-
+/* for covenience */
 static ssize_t pstate_info_show(struct device *dev,
 			  struct device_attribute *attr, char *buf)
 {
@@ -612,52 +577,23 @@ static ssize_t pstate_info_show(struct device *dev,
 	cpunum = dev->id;
 	cpu = all_cpu_data[cpunum];
 
-	nwritten = scnprintf(buf + nwritten, PAGE_SIZE - nwritten, "%d %d %d\n",
+	nwritten = scnprintf(buf + nwritten, PAGE_SIZE - nwritten,
+			     "%d %d %d %d\n",
 			     cpu->pstate.min_pstate, cpu->pstate.max_pstate,
-			     cpu->pstate.turbo_pstate);
+			     cpu->pstate.turbo_pstate,
+			     core_get_pstate_local());
 
 	return nwritten;
 }
 
 static DEVICE_ATTR_RO(pstate_info);
 
-
-static ssize_t amperf_bin_show(struct device *dev,
-			       struct device_attribute *attr, char *buf)
-{
-	unsigned long flags;
-	union {
-		struct {
-			u64 aperf;
-			u64 mperf;
-		} s;
-		char buf[8*2];
-	} u;
-
-	local_irq_save(flags);
-	rdmsrl(MSR_IA32_APERF, u.s.aperf);
-	rdmsrl(MSR_IA32_MPERF, u.s.mperf);
-	local_irq_restore(flags);
-
-	memcpy(buf, u.buf, sizeof(u.buf));
-
-	return sizeof(u.buf);
-}
-
-static DEVICE_ATTR_RO(amperf_bin);
-
 static int turbofreq_cpu_add_interface(unsigned long cpu)
 {
 	struct device *dev = get_cpu_device(cpu);
 	int rc;
 
-	rc = sysfs_create_file(&dev->kobj, &dev_attr_amperf_bin.attr);
-	if (rc)
-		return rc;
 	rc = sysfs_create_file(&dev->kobj, &dev_attr_boost.attr);
-	if (rc)
-		return rc;
-	rc = sysfs_create_file(&dev->kobj, &dev_attr_pstate_user.attr);
 	if (rc)
 		return rc;
 	rc = sysfs_create_file(&dev->kobj, &dev_attr_pstate_info.attr);
@@ -695,11 +631,19 @@ static int __init turbofreq_init(void)
 	}
 	put_online_cpus();
 
+	rc = init_pstate_user_dev();
+	if (rc)
+		goto free_pstate_user_dev;
+
 	rc = cpufreq_register_driver(&turbofreq_driver);
 	if (rc)
 		goto out;
 
 	return rc;
+
+free_pstate_user_dev:
+	fini_pstate_user_dev();
+
 out:
 	__turbofreq_exit();
 	return rc;
@@ -709,6 +653,8 @@ module_init(turbofreq_init);
 static void __exit turbofreq_exit(void)
 {
 	/* actually we can't remove this driver, but whatever */
+	fini_pstate_user_dev();
+
 	__turbofreq_exit();
 }
 module_exit(turbofreq_exit);
