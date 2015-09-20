@@ -23,20 +23,16 @@ static struct cdev  pstate_user_cdev;
 enum {
 	PSTATE_INFO = 0,
 	PSTATE_SET,
-	PSTATE_PERF,
 	PSTATE_DEBUG,
 };
 
 union  pstate_param {
 	struct _info {
-		u16 min, max, turbo;
+		u16 min, max, turbo, scaling;
 	} info;
 	struct _set {
 		u16 request, old;
 	} set;
-	struct _perf {
-		u64 aperf, mperf;
-	} perf;
 };
 
 static long pstate_user_ioctl(struct file *file,
@@ -46,6 +42,7 @@ static long pstate_user_ioctl(struct file *file,
 	void __user *arg = (void __user *)data;
 	union pstate_param param;
 	int cpuid;
+	u64 aperf, mperf;
 
 	if (copy_from_user(&param, arg, sizeof(param)))
 		return  -EFAULT;
@@ -60,20 +57,19 @@ static long pstate_user_ioctl(struct file *file,
 			core_get_max_pstate_local();
 		param.info.turbo =
 			core_get_turbo_pstate_local();
+		param.info.scaling =
+			core_get_scaling_local();
 		break;
 	case PSTATE_SET:
 		param.set.old =
 			core_get_pstate_local();
 		core_set_pstate_local(param.set.request);
 		break;
-	case PSTATE_PERF:
-		/* we need to check the availability of aperf */
-		rdmsrl(MSR_IA32_APERF, param.perf.aperf);
-		rdmsrl(MSR_IA32_APERF, param.perf.mperf);
-		break;
 	case PSTATE_DEBUG:
 	default:
-		printk("cpuid=%d\n", cpuid);
+		rdmsrl(MSR_IA32_APERF, aperf);
+		rdmsrl(MSR_IA32_MPERF, mperf);
+		printk("cpuid=%d aperf=%llu mperf=%llu\n", cpuid, aperf, mperf);
 		break;
 	}
 
@@ -105,6 +101,10 @@ static const struct file_operations pstate_user_fops = {
 int init_pstate_user_dev(void)
 {
 	int rc;
+
+	/* we need to check the cpu type here. e.g., tsc invariant,
+	 * aperf availability
+	 */
 
 	pstate_user_dev = MKDEV(pstate_user_major, pstate_user_minor);
 

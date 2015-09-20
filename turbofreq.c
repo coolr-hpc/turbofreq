@@ -122,7 +122,7 @@ int core_get_turbo_pstate_local(void)
 	return ret;
 }
 
-static inline int core_get_scaling_local(void)
+int core_get_scaling_local(void)
 {
 	return 100000;
 }
@@ -566,27 +566,64 @@ static ssize_t boost_show(struct device *dev,
 
 static DEVICE_ATTR_RW(boost);
 
-/* for covenience */
-static ssize_t pstate_info_show(struct device *dev,
+
+static ssize_t amperf_show(struct device *dev,
 			  struct device_attribute *attr, char *buf)
 {
 	int nwritten = 0;
-	struct cpudata *cpu;
 	int cpunum;
+	u64 aperf, mperf;
+	unsigned long flags;
 
 	cpunum = dev->id;
-	cpu = all_cpu_data[cpunum];
+
+	local_irq_save(flags);
+	if (smp_processor_id() == cpunum)  {
+		rdmsrl(MSR_IA32_APERF, aperf);
+		rdmsrl(MSR_IA32_MPERF, mperf);
+	} else {
+		rdmsrl_on_cpu(cpunum, MSR_IA32_APERF, &aperf);
+		rdmsrl_on_cpu(cpunum, MSR_IA32_MPERF, &mperf);
+	}
+	local_irq_restore(flags);
 
 	nwritten = scnprintf(buf + nwritten, PAGE_SIZE - nwritten,
-			     "%d %d %d %d\n",
-			     cpu->pstate.min_pstate, cpu->pstate.max_pstate,
-			     cpu->pstate.turbo_pstate,
-			     core_get_pstate_local());
+			     "%llu %llu\n", aperf, mperf);
 
 	return nwritten;
 }
 
-static DEVICE_ATTR_RO(pstate_info);
+static DEVICE_ATTR_RO(amperf);
+
+
+static ssize_t amperf_bin_show(struct device *dev,
+			  struct device_attribute *attr, char *buf)
+{
+	int cpunum;
+	unsigned long flags;
+	struct amperf {
+		u64 aperf, mperf;
+	} p;
+
+	cpunum = dev->id;
+
+	local_irq_save(flags);
+	if (smp_processor_id() == cpunum)  {
+		rdmsrl(MSR_IA32_APERF, p.aperf);
+		rdmsrl(MSR_IA32_MPERF, p.mperf);
+	} else {
+		rdmsrl_on_cpu(cpunum, MSR_IA32_APERF, &p.aperf);
+		rdmsrl_on_cpu(cpunum, MSR_IA32_MPERF, &p.mperf);
+	}
+	local_irq_restore(flags);
+
+	memcpy(buf, &p, sizeof(p));
+
+	return sizeof(p);
+}
+
+static DEVICE_ATTR_RO(amperf_bin);
+
 
 static int turbofreq_cpu_add_interface(unsigned long cpu)
 {
@@ -596,7 +633,13 @@ static int turbofreq_cpu_add_interface(unsigned long cpu)
 	rc = sysfs_create_file(&dev->kobj, &dev_attr_boost.attr);
 	if (rc)
 		return rc;
-	rc = sysfs_create_file(&dev->kobj, &dev_attr_pstate_info.attr);
+	rc = sysfs_create_file(&dev->kobj, &dev_attr_amperf.attr);
+	if (rc)
+		return rc;
+	rc = sysfs_create_file(&dev->kobj, &dev_attr_amperf_bin.attr);
+	if (rc)
+		return rc;
+
 	return rc;
 }
 /* sysfs end */
